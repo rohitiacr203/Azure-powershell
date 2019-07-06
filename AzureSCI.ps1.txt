@@ -1,0 +1,169 @@
+﻿<#
+.SYNOPSIS
+  Script to create SCI set up 
+.DESCRIPTION
+  <Script will create four vm's based on SBI image>
+.INPUTS
+  <InstrumentsInfo.xml & ModuleBlobsInfo.xml>
+.NOTES
+  Version:        1.0
+  Author:         Rohit singh
+  Creation Date:  04/10/2013
+  Purpose/Change: Initial script development
+#>
+
+
+# Initialize common variables =================================================================
+param(
+ $TenantId = 'f82969ba-b995-4d80-8bfa-fd22c1d0557a',
+ $SubscriptionName = 'a1052_DX_DevOps_Azure_2',
+ $resourceGroupName = 'a1052_SBI_Repository',
+ $vmName = "az003-siemens",
+ $location = 'East US',
+ $vmSize = 'Standard_A1',
+ $StorageAccountName = 'a1052sbistorage',
+ $size = 'Standard_DS1_v2',
+ $myvirtualnetwork = 'a1052_SBI_Repository-vnet',
+ $nsgName = 'az003-siemens-nsg',
+ $networkName = 'myTestNetworks',
+ $VirtualNetworkAddress = '192.168.1.0/16',
+ $subnetName = 'EmulatorLAN',
+ $subnetAddress = '192.168.1.0/24',
+ $OSDiskName = 'MyClient'
+
+)
+
+# VM's to Auto Deploy
+$VMRoles = @()
+$VMRoles += ('az001-PCC')
+$VMRoles += ('az001-CC')
+$VMRoles += ('az001-IA')
+$VMRoles += ('az001-SH')
+
+
+# Login and Set Context =======================================================================
+Login-AzureRmAccount -TenantId $TenantId
+$Context = Set-AzureRmContext -SubscriptionName $SubscriptionName
+$Subscription = Get-AzureRmSubscription -SubscriptionName $Context.Subscription.Name 
+
+
+# Get the UserID and Password info that we want associated with the new VM's.
+$pw = "windows12345@" | ConvertTo-SecureString -AsPlainText -Force
+$cred = [System.Management.Automation.PSCredential]::new('siemens',$pw)
+
+
+#Create or check for existing resource group
+$resourceGroup = Get-AzureRmResourceGroup -Name $resourceGroupName -ErrorAction SilentlyContinue
+if(!$resourceGroup)
+{
+    Write-Host "Resource group '$resourceGroupName' does not exist. To create a new resource group, please enter a location.";
+    #if(!$location) {
+    #    $location = Read-Host "location";
+    #}
+    Write-Host "Creating resource group '$resourceGroupName' in location '$location'" -BackgroundColor Green
+    New-AzureRmResourceGroup -Name $resourceGroupName -Location $location
+}
+else{
+    Write-Host "Using existing resource group '$resourceGroupName'" -BackgroundColo DarkMagenta
+}
+
+# To check the SA Name(Format) entered is valid
+  $saExists = Get-AzureRmStorageAccountNameAvailability -Name $StorageAccountName
+  $SaExist = $saExists.NameAvailable
+
+if ($SaExist -eq 'True')
+{
+    Write-Host "Creating Storage Account"
+    New-AzureRmStorageAccount -ResourceGroupName $resourceGroupName `
+                              -Name $StorageAccountName `
+                              -Location $Location `
+                              -Type Standard_LRS
+}
+else{
+    Write-Host "Storage Account '$StorageAccountName' already Exists!" -BackgroundColor DarkMagenta
+}
+
+#******************************************************************************
+# Virtual network Creation
+#******************************************************************************
+
+$rdpRule = New-AzureRmNetworkSecurityRuleConfig  -Name 'rdp-rule' `
+                                                 -Description 'Allow RDP' `
+                                                 -Access Allow -Protocol Tcp -Direction Inbound -Priority 100  `
+                                                 -SourceAddressPrefix Internet -SourcePortRange *  `
+                                                 -DestinationAddressPrefix * -DestinationPortRange 3389 
+Write-Host "setting up RDP rule .." -BackgroundColor Green
+
+#Network security group creation
+$nsgExists = Get-AzureRmNetworkSecurityGroup -Name $nsgName -ResourceGroupName $resourceGroupName
+if($nsgExists -ne "Succeeded")
+{
+$networkSecurityGroup = New-AzureRmNetworkSecurityGroup -Name $nsgName `
+                                                        -ResourceGroupName $resourceGroupName `
+                                                        -Location $location  `
+                                                        -SecurityRules $rdpRule -Force `
+}
+else{
+    Write-Host "Network Security Group '$nsgName' already Exists!" -BackgroundColor DarkMagenta
+}
+
+#subnet creation
+$subnetConfig = New-AzureRmVirtualNetworkSubnetConfig -Name $subnetName `
+                                                      -AddressPrefix $subnetAddress `
+                                                      -NetworkSecurityGroup $networkSecurityGroup
+
+#Virtual Network creation
+#$Vnet = Get-AzureRmVirtualNetwork -Name $myvirtualnetwork -ResourceGroupName $resourceGroupName
+
+#if ($Vnet -eq $false)
+#{ 
+#$Vnet = New-AzureRmVirtualNetwork -ResourceGroupName $resourceGroupName `
+#                                  -Name $networkName `
+#                                  -AddressPrefix $VirtualNetworkAddress `
+#                                  -Subnet $subnetConfig `
+#                                  -Location $location `
+#}
+#else{
+#    Write-Host "Virtual Network '$networkName' already Exists!" -BackgroundColor DarkMagenta
+#}
+
+
+#Add OS info into vm(Disk configuration)
+$diskName = 'myOSdisk'
+$STA = Get-AzureRmStorageAccount -ResourceGroupName $resourceGroupName -Name $StorageAccountName
+#$OSDiskUri = $STA.PrimaryEndpoints.Blob.ToString() + "vhds/" + $NewVM + ".vhd"
+#$vm = Set-AzureRmVMOSDisk -VM $vm -Name $diskName -VhdUri $OSDiskUri -CreateOption fromImage 
+#write-host "Added OS disk configuration to Vm" -BackgroundColor Green
+
+
+# VM Config for each VM
+$VMConfig = @()
+
+# Create VMConfigs and add to an array
+foreach ($NewVM in $VMRoles) {
+
+    # Get the UserID and Password info that we want associated with the new VM's.
+
+    $publicIp = New-AzureRmPublicIpAddress -Name $NewVM -ResourceGroupName $resourceGroupName -Location $location -AllocationMethod Static -Force
+    $vmNIC = New-AzureRmNetworkInterface -Name $NewVM -ResourceGroupName $resourceGroupName -Location $location -SubnetId $Vnet.Subnets[0].Id -PublicIpAddressId $publicIp.Id -Force `
+
+    $vm = New-AzureRmVMConfig -VMName $NewVM -VMSize $vmSize
+    $vm = Set-AzureRmVMOperatingSystem -VM $vm -Windows -ComputerName $vmName  -Credential $cred -ProvisionVMAgent -EnableAutoUpdate -TimeZone 'Pacific Standard Time'
+    Write-Host "operating system settin..." -BackgroundColor Green
+
+    $vm = Set-AzureRmVMSourceImage -VM $vm -PublisherName "MicrosoftWindowsServer" -offer "WindowsServer" -Skus "2012-R2-Datacenter" -Version "latest"
+    $vm = Add-AzureRmVMNetworkInterface -VM $vm -Id $vmNIC.Id 
+    Write-Host "source image and NIC added ......" -BackgroundColor Green
+
+    $OSDiskUri = $STA.PrimaryEndpoints.Blob.ToString() + "vhds/" + $NewVM + ".vhd"
+    $vm = Set-AzureRmVMOSDisk -VM $vm -Name $diskName -VhdUri $OSDiskUri -CreateOption FromImage -Windows
+    write-host "Added OS disk configuration to Vm" -BackgroundColor Green
+    
+    # Add the Config to an Array
+    $VMConfig = $vm
+    Write-Host "Add the Config to an Array" -BackgroundColor Green
+
+    New-AzureRmVM -ResourceGroupName $resourceGroupName -Location $location -VM $vm
+    Write-Host "VM $NewVM created..." -BackgroundColor Green
+}
+
